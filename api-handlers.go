@@ -63,7 +63,7 @@ func handleInject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{
 		"transaction_id": t.TransactionID,
-		"message":        "Call GET /transactions/{id} to fetch the processed transaction.",
+		"message":        "Call GET /transactions/{id} to fetch the processed transaction or set ALERT_WEBHOOK_URL to get webhooks when the transaction is flagged.",
 	})
 }
 

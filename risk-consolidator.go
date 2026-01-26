@@ -109,20 +109,20 @@ func (s *RiskConsolidatorSkill) flagAnomalyViaWebSocket(t Transaction, assessmen
 func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment ConsolidatedRiskAssessment) error {
 	baseURLs := []string{}
 
-	if primaryURL := os.Getenv("CLOUD_ANOMALY_PRIMARY_URL"); primaryURL != "" {
+	if primaryURL := os.Getenv("ALERT_WEBHOOK_URL"); primaryURL != "" {
 		baseURLs = append(baseURLs, primaryURL)
 	}
 
-	if secondaryURL := os.Getenv("CLOUD_ANOMALY_SECONDARY_URL"); secondaryURL != "" {
+	if secondaryURL := os.Getenv("ALERT_WEBHOOK_SECONDARY_URL"); secondaryURL != "" {
 		baseURLs = append(baseURLs, secondaryURL)
 	}
 
-	if backupURL := os.Getenv("CLOUD_ANOMALY_BACKUP_URL"); backupURL != "" {
+	if backupURL := os.Getenv("ALERT_WEBHOOK_BACKUP_URL"); backupURL != "" {
 		baseURLs = append(baseURLs, backupURL)
 	}
 
 	if len(baseURLs) == 0 {
-		log.Printf("No cloud URLs configured for anomaly flagging. Skipping cloud notification.")
+		log.Printf("No webhooks configured for anomaly flagging. Skipping notification.")
 		return nil
 	}
 
@@ -179,7 +179,7 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 	var lastError error
 	for i, baseURL := range baseURLs {
 
-		log.Printf("Attempting to flag anomaly to cloud URL %d/%d: %s", i+1, len(baseURLs), baseURL)
+		log.Printf("Attempting to flag anomaly to webhook %d/%d: %s", i+1, len(baseURLs), baseURL)
 
 		req, err := http.NewRequest("POST", baseURL, bytes.NewBuffer(jsonData))
 		if err != nil {
@@ -191,7 +191,7 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "BlnkWatch-RiskConsolidator/1.0")
 
-		if apiKey := os.Getenv("CLOUD_ANOMALY_API_KEY"); apiKey != "" {
+		if apiKey := os.Getenv("ALERT_WEBHOOK_API_KEY"); apiKey != "" {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
@@ -212,7 +212,7 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 		}
 
 		if statusCode >= 200 && statusCode < 300 {
-			log.Printf("Successfully flagged anomaly to cloud URL %s. Status: %d", baseURL, statusCode)
+			log.Printf("Successfully flagged anomaly to webhook %s. Status: %d", baseURL, statusCode)
 
 			if t.MetaData == nil {
 				t.MetaData = make(map[string]interface{})
@@ -238,11 +238,11 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 		if len(bodyBytes) > 0 {
 			errMsg = fmt.Sprintf("status=%d, body=%s", statusCode, string(bodyBytes))
 		}
-		lastError = fmt.Errorf("cloud URL %s returned error: %s", baseURL, errMsg)
-		log.Printf("Cloud URL %s returned error: %s", baseURL, errMsg)
+		lastError = fmt.Errorf("webhook %s returned error: %s", baseURL, errMsg)
+		log.Printf("Webhook %s returned error: %s", baseURL, errMsg)
 	}
 
-	return fmt.Errorf("failed to flag anomaly to any cloud URL. Last error: %w", lastError)
+	return fmt.Errorf("failed to flag anomaly to any webhook. Last error: %w", lastError)
 }
 
 func (s *RiskConsolidatorSkill) Execute(t Transaction) error {
@@ -305,10 +305,10 @@ func (s *RiskConsolidatorSkill) Execute(t Transaction) error {
 	shouldFlagToCloud := false
 
 	riskThreshold := 0.5
-	if thresholdStr := os.Getenv("CLOUD_ANOMALY_RISK_THRESHOLD"); thresholdStr != "" {
+	if thresholdStr := os.Getenv("ALERT_WEBHOOK_RISK_THRESHOLD"); thresholdStr != "" {
 		if threshold, err := fmt.Sscanf(thresholdStr, "%f", &riskThreshold); err == nil && threshold == 1 {
 		} else {
-			log.Printf("Warning: Invalid CLOUD_ANOMALY_RISK_THRESHOLD value '%s', using default 0.5", thresholdStr)
+			log.Printf("Warning: Invalid ALERT_WEBHOOK_RISK_THRESHOLD value '%s', using default 0.5", thresholdStr)
 		}
 	}
 
@@ -320,9 +320,9 @@ func (s *RiskConsolidatorSkill) Execute(t Transaction) error {
 		shouldFlagToCloud = true
 	}
 
-	if cloudFlaggingEnabled := os.Getenv("CLOUD_ANOMALY_ENABLED"); cloudFlaggingEnabled == "false" {
+	if cloudFlaggingEnabled := os.Getenv("ALERT_WEBHOOK_ENABLED"); cloudFlaggingEnabled == "false" {
 		shouldFlagToCloud = false
-		log.Printf("Cloud anomaly flagging is disabled via CLOUD_ANOMALY_ENABLED=false")
+		log.Printf("Alert webhook is disabled via ALERT_WEBHOOK_ENABLED=false")
 	}
 
 	if shouldFlagToCloud {
@@ -333,7 +333,7 @@ func (s *RiskConsolidatorSkill) Execute(t Transaction) error {
 			log.Printf("WebSocket anomaly flagging failed for transaction %s: %v", t.TransactionID, websocketErr)
 
 			if cloudErr := s.flagAnomalyToCloud(t, assessment); cloudErr != nil {
-				log.Printf("Warning: Both WebSocket and cloud anomaly flagging failed for transaction %s. WebSocket: %v, Cloud: %v",
+				log.Printf("Warning: Both WebSocket and webhook alert failed for transaction %s. WebSocket: %v, Webhook: %v",
 					t.TransactionID, websocketErr, cloudErr)
 
 				t.MetaData["websocket_anomaly_error"] = websocketErr.Error()
