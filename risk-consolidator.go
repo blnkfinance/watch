@@ -78,9 +78,6 @@ func (s *RiskConsolidatorSkill) flagAnomalyViaWebSocket(t Transaction, assessmen
 	}
 	additionalData["transaction_amount"] = t.Amount
 	additionalData["transaction_reference"] = t.Reference
-	additionalData["source_ledger"] = t.Source
-	additionalData["destination_ledger"] = t.Destination
-
 	anomaly := AnomalyMessage{
 		Type:           "anomaly",
 		TransactionID:  t.TransactionID,
@@ -158,8 +155,6 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 	}
 	evaluationData["transaction_amount"] = t.Amount
 	evaluationData["transaction_reference"] = t.Reference
-	evaluationData["source_ledger"] = t.Source
-	evaluationData["destination_ledger"] = t.Destination
 
 	request := CloudAnomalyRequest{
 		TransactionID:  t.TransactionID,

@@ -80,10 +80,10 @@ type Rule struct {
 }
 
 type RiskVerdict struct {
-	RuleID  int
-	Verdict string
-	Score   float64
-	Reason  string
+	RuleID  int     `json:"rule_id"`
+	Verdict string  `json:"verdict"`
+	Score   float64 `json:"score"`
+	Reason  string  `json:"reason"`
 }
 
 func EvaluateRules(txn map[string]any, rules []Rule, aggContext map[string]float64) ([]RiskVerdict, error) {
