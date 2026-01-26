@@ -4,18 +4,20 @@
 
 1. [Introduction](#introduction)
 2. [Getting Started](#getting-started)
-3. [Core Concepts](#core-concepts)
-4. [Basic Syntax](#basic-syntax)
-5. [Rule Structure](#rule-structure)
-6. [Condition Types](#condition-types)
-7. [Actions and Verdicts](#actions-and-verdicts)
-8. [Practical Examples](#practical-examples)
-9. [Advanced Patterns](#advanced-patterns)
-10. [Best Practices](#best-practices)
-11. [Common Patterns](#common-patterns)
-12. [Troubleshooting](#troubleshooting)
-13. [Field Reference](#field-reference)
-14. [Conclusion](#conclusion)
+3. [Quick Start: Evaluating Transactions](#quick-start-evaluating-transactions)
+4. [Related Documentation](#related-documentation)
+5. [Core Concepts](#core-concepts)
+6. [Basic Syntax](#basic-syntax)
+7. [Rule Structure](#rule-structure)
+8. [Condition Types](#condition-types)
+9. [Actions and Verdicts](#actions-and-verdicts)
+10. [Practical Examples](#practical-examples)
+11. [Advanced Patterns](#advanced-patterns)
+12. [Best Practices](#best-practices)
+13. [Common Patterns](#common-patterns)
+14. [Troubleshooting](#troubleshooting)
+15. [Field Reference](#field-reference)
+16. [Conclusion](#conclusion)
 
 ---
 
@@ -120,7 +122,7 @@ Configure your `.env` file (see `env.example`) with:
 - `WATCH_SCRIPT_DIR`: Directory for watch scripts (default: `watch_scripts`)
 - `WATCH_SCRIPT_GIT_REPO`: Optional Git repository URL for watch scripts
 - `WATCH_SCRIPT_GIT_BRANCH`: Git branch to use (default: `main`)
-- `CLOUD_ANOMALY_*`: Cloud anomaly flagging configuration
+- `ALERT_WEBHOOK_*`: Webhook alerting configuration (see below)
 
 ### Make Targets
 
@@ -134,6 +136,155 @@ Configure your `.env` file (see `env.example`) with:
 | `make clean` | Remove built binaries |
 | `make test` | Run tests |
 | `make help` | Show help message |
+
+---
+
+## Quick Start: Evaluating Transactions
+
+### 1. Inject Your First Transaction
+
+Send a transaction to the `/inject` endpoint for evaluation against your watch rules:
+
+```bash
+curl -X POST http://localhost:8081/inject \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transaction_id": "txn_001",
+    "amount": 15000,
+    "currency": "USD",
+    "source": "acct_sender_123",
+    "destination": "acct_receiver_456",
+    "reference": "payment_ref_001",
+    "description": "Wire transfer",
+    "status": "pending",
+    "metadata": {
+      "kyc_tier": 1,
+      "source_country": "US",
+      "destination_country": "NG"
+    }
+  }'
+```
+
+**Response:**
+```json
+{
+  "transaction_id": "txn_001",
+  "message": "Call GET /transactions/{id} to fetch the processed transaction or set ALERT_WEBHOOK_URL to get webhooks when the transaction is flagged."
+}
+```
+
+### 2. Get Transaction Verdict
+
+After injecting a transaction, retrieve the full evaluation results:
+
+```bash
+curl http://localhost:8081/transactions/txn_001
+```
+
+**Response:**
+```json
+{
+  "transaction_id": "txn_001",
+  "amount": 15000,
+  "currency": "USD",
+  "source": "acct_sender_123",
+  "destination": "acct_receiver_456",
+  "reference": "payment_ref_001",
+  "description": "Wire transfer",
+  "status": "pending",
+  "metadata": {
+    "kyc_tier": 1,
+    "source_country": "US",
+    "destination_country": "NG",
+    "dsl_verdicts": [
+      {
+        "rule_id": 1,
+        "verdict": "review",
+        "score": 0.5,
+        "reason": "Amount exceeds $10,000"
+      }
+    ],
+    "consolidated_risk_assessment": {
+      "final_risk_score": 0.5,
+      "final_verdict": "review",
+      "final_reason": "Amount exceeds $10,000",
+      "source_count": 1
+    }
+  }
+}
+```
+
+The `metadata` field contains:
+- **`dsl_verdicts`**: Array of individual rule evaluations with `rule_id`, `verdict`, `score`, and `reason`
+- **`consolidated_risk_assessment`**: Aggregated risk assessment with `final_risk_score`, `final_verdict`, `final_reason`, and `source_count`
+
+### 3. Configure Alert Webhooks
+
+To receive real-time alerts when transactions are flagged, configure webhooks in your `.env` file:
+
+```bash
+# Primary webhook URL for risk alerts
+ALERT_WEBHOOK_URL=https://your-server.com/alerts
+
+# Secondary webhook URL (fallback)
+ALERT_WEBHOOK_SECONDARY_URL=https://backup.your-server.com/alerts
+
+# Backup webhook URL (fallback)
+ALERT_WEBHOOK_BACKUP_URL=https://another-backup.com/alerts
+
+# API key for webhook authentication (sent as Bearer token)
+ALERT_WEBHOOK_API_KEY=your_api_key_here
+
+# Risk threshold for alerting (default: 0.5)
+# Transactions with risk score >= this threshold trigger alerts
+ALERT_WEBHOOK_RISK_THRESHOLD=0.5
+
+# Enable/disable webhook alerting (set to "false" to disable)
+ALERT_WEBHOOK_ENABLED=true
+```
+
+**Webhook Payload:**
+
+When a transaction triggers an alert, the webhook receives:
+
+```json
+{
+  "transaction_id": "txn_001",
+  "description": "Amount exceeds $10,000",
+  "risk_level": "medium",
+  "risk_score": 0.5,
+  "verdict": "review",
+  "source_count": 1,
+  "evaluation_data": {
+    "final_risk_score": 0.5,
+    "final_verdict": "review",
+    "final_reason": "Amount exceeds $10,000",
+    "source_count": 1,
+    "dsl_verdicts": [...],
+    "transaction_amount": 15000,
+    "transaction_reference": "payment_ref_001"
+  }
+}
+```
+
+**Risk Levels:**
+- `high`: Risk score >= 0.8
+- `medium`: Risk score >= 0.6
+- `low`: Risk score >= 0.3
+- `very_low`: Risk score < 0.3
+
+---
+
+## Related Documentation
+
+For more detailed technical documentation, see:
+
+| Document | Description |
+|----------|-------------|
+| [API Documentation](API_DOCUMENTATION.md) | Complete API reference for all endpoints |
+| [Watermark Sync](WATERMARK_SYNC_DOCUMENTATION.md) | Transaction synchronization from PostgreSQL to DuckDB |
+| [Git Manager](GIT_MANAGER_README.md) | Managing watch scripts via Git repositories |
+| [Parser Reference](PARSER_README.md) | DSL parser internals and grammar specification |
 
 ---
 
@@ -506,15 +657,3 @@ If you're interested in contributing as a maintainer, we'd love to have you! Are
 - **Project governance**: Helping set direction, triage issues, and manage releases
 
 To get started, check out open issues, submit a pull request, or reach out to discuss how you'd like to contribute.
-
----
-
-## Conclusion
-
-Blnk Watch provides a **powerful, declarative way to enforce transaction risk controls in real time**.
-
-Start with small, clear rules, validate with real data, and iterate.
-
-Consistent naming, careful scoring, and thorough testing ensure that fraud detection is both effective and operationally efficient.
-
----
