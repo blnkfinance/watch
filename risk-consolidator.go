@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -38,15 +39,16 @@ type RiskConsolidatorSkill struct {
 }
 
 type CloudAnomalyRequest struct {
-	Description string `json:"description"`
-	RiskLevel   string `json:"risk_level"`
+	TransactionID  string                 `json:"transaction_id"`
+	Description    string                 `json:"description"`
+	RiskLevel      string                 `json:"risk_level"`
+	RiskScore      float64                `json:"risk_score"`
+	Verdict        string                 `json:"verdict"`
+	SourceCount    int                    `json:"source_count"`
+	EvaluationData map[string]interface{} `json:"evaluation_data,omitempty"`
 }
 
-type CloudAnomalyResponse struct {
-	Success   bool   `json:"success"`
-	Message   string `json:"message"`
-	AnomalyID string `json:"anomaly_id,omitempty"`
-}
+type CloudAnomalyResponse map[string]interface{}
 
 func (s *RiskConsolidatorSkill) Name() string {
 	return "RiskConsolidatorSkill"
@@ -144,9 +146,29 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 		riskLevel = "very_low"
 	}
 
+	evaluationData := make(map[string]interface{})
+	evaluationData["final_risk_score"] = assessment.FinalRiskScore
+	evaluationData["final_verdict"] = assessment.FinalVerdict
+	evaluationData["final_reason"] = assessment.FinalReason
+	evaluationData["source_count"] = assessment.SourceCount
+	if t.MetaData != nil {
+		if dslVerdicts, ok := t.MetaData["dsl_verdicts"]; ok {
+			evaluationData["dsl_verdicts"] = dslVerdicts
+		}
+	}
+	evaluationData["transaction_amount"] = t.Amount
+	evaluationData["transaction_reference"] = t.Reference
+	evaluationData["source_ledger"] = t.Source
+	evaluationData["destination_ledger"] = t.Destination
+
 	request := CloudAnomalyRequest{
-		Description: description,
-		RiskLevel:   riskLevel,
+		TransactionID:  t.TransactionID,
+		Description:    description,
+		RiskLevel:      riskLevel,
+		RiskScore:      assessment.FinalRiskScore,
+		Verdict:        assessment.FinalVerdict,
+		SourceCount:    assessment.SourceCount,
+		EvaluationData: evaluationData,
 	}
 
 	jsonData, err := json.Marshal(request)
@@ -161,13 +183,13 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 
 	var lastError error
 	for i, baseURL := range baseURLs {
-		fullURL := fmt.Sprintf("%s/flag/%s", strings.TrimSuffix(baseURL, "/"), t.TransactionID)
-		log.Printf("Attempting to flag anomaly to cloud URL %d/%d: %s", i+1, len(baseURLs), fullURL)
 
-		req, err := http.NewRequest("POST", fullURL, bytes.NewBuffer(jsonData))
+		log.Printf("Attempting to flag anomaly to cloud URL %d/%d: %s", i+1, len(baseURLs), baseURL)
+
+		req, err := http.NewRequest("POST", baseURL, bytes.NewBuffer(jsonData))
 		if err != nil {
-			lastError = fmt.Errorf("failed to create request for URL %s: %w", fullURL, err)
-			log.Printf("Error creating request for %s: %v", fullURL, err)
+			lastError = fmt.Errorf("failed to create request for URL %s: %w", baseURL, err)
+			log.Printf("Error creating request for %s: %v", baseURL, err)
 			continue
 		}
 
@@ -180,37 +202,49 @@ func (s *RiskConsolidatorSkill) flagAnomalyToCloud(t Transaction, assessment Con
 
 		resp, err := client.Do(req)
 		if err != nil {
-			lastError = fmt.Errorf("failed to send request to %s: %w", fullURL, err)
-			log.Printf("Error sending request to %s: %v", fullURL, err)
+			lastError = fmt.Errorf("failed to send request to %s: %w", baseURL, err)
+			log.Printf("Error sending request to %s: %v", baseURL, err)
 			continue
 		}
 
-		var response CloudAnomalyResponse
-		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		statusCode := resp.StatusCode
+
+		// Read and close body immediately to avoid resource leaks in loop
+		var bodyBytes []byte
+		if resp.Body != nil {
+			bodyBytes, _ = io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastError = fmt.Errorf("failed to decode response from %s: %w", fullURL, err)
-			log.Printf("Error decoding response from %s: %v", fullURL, err)
-			continue
 		}
-		resp.Body.Close()
 
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Printf("Successfully flagged anomaly to cloud URL %s. Status: %d", fullURL, resp.StatusCode)
+		if statusCode >= 200 && statusCode < 300 {
+			log.Printf("Successfully flagged anomaly to cloud URL %s. Status: %d", baseURL, statusCode)
 
 			if t.MetaData == nil {
 				t.MetaData = make(map[string]interface{})
 			}
 			t.MetaData["cloud_anomaly_flagged"] = true
-			t.MetaData["cloud_anomaly_url"] = fullURL
+			t.MetaData["cloud_anomaly_url"] = baseURL
 			t.MetaData["cloud_anomaly_timestamp"] = time.Now()
 			t.MetaData["cloud_anomaly_description"] = request.Description
 			t.MetaData["cloud_anomaly_risk_level"] = request.RiskLevel
 
+			// Parse response if available
+			if len(bodyBytes) > 0 {
+				var response CloudAnomalyResponse
+				if err := json.Unmarshal(bodyBytes, &response); err == nil {
+					t.MetaData["cloud_anomaly_response"] = response
+				}
+			}
+
 			return nil
-		} else {
-			lastError = fmt.Errorf("cloud URL %s returned error: status=%d", fullURL, resp.StatusCode)
-			log.Printf("Cloud URL %s returned error: status=%d", fullURL, resp.StatusCode)
 		}
+
+		errMsg := fmt.Sprintf("status=%d", statusCode)
+		if len(bodyBytes) > 0 {
+			errMsg = fmt.Sprintf("status=%d, body=%s", statusCode, string(bodyBytes))
+		}
+		lastError = fmt.Errorf("cloud URL %s returned error: %s", baseURL, errMsg)
+		log.Printf("Cloud URL %s returned error: %s", baseURL, errMsg)
 	}
 
 	return fmt.Errorf("failed to flag anomaly to any cloud URL. Last error: %w", lastError)
@@ -311,8 +345,6 @@ func (s *RiskConsolidatorSkill) Execute(t Transaction) error {
 				t.MetaData["websocket_anomaly_error_timestamp"] = time.Now()
 				t.MetaData["cloud_anomaly_error"] = cloudErr.Error()
 				t.MetaData["cloud_anomaly_error_timestamp"] = time.Now()
-			} else {
-				log.Printf("Successfully flagged anomaly to cloud after WebSocket failure for transaction %s", t.TransactionID)
 			}
 		}
 	} else {
