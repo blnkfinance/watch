@@ -75,10 +75,11 @@ jobs:
       - name: Publish GitHub release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" --generate-notes
+          if ! gh release view "${GITHUB_REF_NAME}" --repo "${GH_REPO}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" --repo "${GH_REPO}" --generate-notes
           fi
 
-          find dist -type f -exec gh release upload "${GITHUB_REF_NAME}" {} --clobber \;
+          find dist -type f -exec gh release upload "${GITHUB_REF_NAME}" --repo "${GH_REPO}" {} --clobber \;
