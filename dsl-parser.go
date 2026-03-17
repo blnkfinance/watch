@@ -1145,6 +1145,22 @@ func (p *Parser) parseArrayLiteral() Expression {
 	}
 }
 
+// parseObjectKey parses an object key, which may be a single identifier or a dotted path (e.g. meta_data.status).
+func (p *Parser) parseObjectKey() (string, bool) {
+	if p.curToken.Type != IDENTIFIER {
+		p.addError("expected identifier for object key")
+		return "", false
+	}
+	key := p.curToken.Literal
+	p.nextToken()
+	for p.curToken.Type == DOT && p.peekToken.Type == IDENTIFIER {
+		p.nextToken()
+		key += "." + p.curToken.Literal
+		p.nextToken()
+	}
+	return key, true
+}
+
 func (p *Parser) parseObjectLiteral() Expression {
 	token := p.curToken
 	p.nextToken()
@@ -1154,13 +1170,10 @@ func (p *Parser) parseObjectLiteral() Expression {
 	p.skipNewlines()
 
 	if p.curToken.Type != RBRACE {
-		if p.curToken.Type != IDENTIFIER {
-			p.addError("expected identifier for object key")
+		key, ok := p.parseObjectKey()
+		if !ok {
 			return nil
 		}
-
-		key := p.curToken.Literal
-		p.nextToken()
 
 		if !p.expectToken(COLON) {
 			return nil
@@ -1183,13 +1196,10 @@ func (p *Parser) parseObjectLiteral() Expression {
 				break
 			}
 
-			if p.curToken.Type != IDENTIFIER {
-				p.addError("expected identifier for object key")
+			key, ok = p.parseObjectKey()
+			if !ok {
 				return nil
 			}
-
-			key = p.curToken.Literal
-			p.nextToken()
 
 			if !p.expectToken(COLON) {
 				return nil
@@ -1330,6 +1340,9 @@ func expressionToCondition(expr Expression) (interface{}, error) {
 	case *InfixExpression:
 		return infixToCondition(e)
 	case *FunctionCall:
+		if e.Name == "previous_transaction" {
+			return functionCallToPreviousTransactionCondition(e)
+		}
 		return functionToCondition(e)
 	case *LogicalExpression:
 		return logicalToCondition(e)
@@ -1353,6 +1366,11 @@ func infixToCondition(expr *InfixExpression) (interface{}, error) {
 		// Emit "aggregate" type so the interpreter recognizes sum/count/avg/max/min (it does not handle "function_comparison").
 		if funcCall.Name == "sum" || funcCall.Name == "count" || funcCall.Name == "avg" || funcCall.Name == "max" || funcCall.Name == "min" {
 			return functionCallToAggregateCondition(funcCall, op, value)
+		}
+
+		// Emit "time_function" type so the interpreter recognizes hour_of_day, day_of_week, etc.
+		if isTimeFunctionName(funcCall.Name) {
+			return functionCallToTimeFunctionCondition(funcCall, op, value)
 		}
 
 		funcCondition, err := functionToCondition(funcCall)
@@ -1441,6 +1459,79 @@ func functionCallToAggregateCondition(funcCall *FunctionCall, op string, value i
 		"op":          op,
 		"value":       valueNum,
 		"filter":      filterSimple,
+	}, nil
+}
+
+// isTimeFunctionName returns true for function names the interpreter treats as time functions.
+func isTimeFunctionName(name string) bool {
+	switch name {
+	case "hour_of_day", "day_of_week", "day_of_month", "day_of_year", "month_of_year", "week_of_year", "year":
+		return true
+	default:
+		return false
+	}
+}
+
+// functionCallToTimeFunctionCondition converts time function comparisons (e.g. hour_of_day(timestamp) == 22)
+// into the "time_function" condition format that the interpreter expects.
+func functionCallToTimeFunctionCondition(funcCall *FunctionCall, op string, value interface{}) (interface{}, error) {
+	if len(funcCall.Arguments) != 1 {
+		return nil, fmt.Errorf("time function %s requires exactly one argument (field path)", funcCall.Name)
+	}
+	field, err := expressionToFieldPath(funcCall.Arguments[0])
+	if err != nil {
+		return nil, fmt.Errorf("time function %s argument must be a field path (e.g. timestamp): %w", funcCall.Name, err)
+	}
+	return map[string]interface{}{
+		"type":     "time_function",
+		"function": funcCall.Name,
+		"field":    field,
+		"op":       op,
+		"value":    value,
+	}, nil
+}
+
+// functionCallToPreviousTransactionCondition converts previous_transaction(within: "...", match: {...})
+// into the "previous_transaction" condition format that the interpreter expects.
+func functionCallToPreviousTransactionCondition(funcCall *FunctionCall) (interface{}, error) {
+	var timeWindow string
+	var match map[string]interface{}
+
+	for _, arg := range funcCall.Arguments {
+		named, ok := arg.(*NamedArgument)
+		if !ok {
+			continue
+		}
+		switch named.Name {
+		case "within", "time_window":
+			s, ok := valueToString(named.Value)
+			if !ok || s == "" {
+				return nil, fmt.Errorf("previous_transaction %s must be a non-empty string (e.g. PT1H)", named.Name)
+			}
+			timeWindow = s
+		case "match":
+			val, err := expressionToValue(named.Value)
+			if err != nil {
+				return nil, fmt.Errorf("previous_transaction match: %w", err)
+			}
+			match, ok = val.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("previous_transaction match must be an object (e.g. { source: $current.source })")
+			}
+		}
+	}
+
+	if timeWindow == "" {
+		return nil, fmt.Errorf("previous_transaction requires within or time_window (e.g. PT1H)")
+	}
+	if match == nil {
+		match = make(map[string]interface{})
+	}
+
+	return map[string]interface{}{
+		"type":         "previous_transaction",
+		"time_window":  timeWindow,
+		"match":        match,
 	}, nil
 }
 
