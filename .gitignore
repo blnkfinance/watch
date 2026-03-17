@@ -1,6 +1,4 @@
 blnk-watch
-blnk_watch_db/
-watch_scripts/
 blnk.db
 instructions.db
 instructions.db.wal
@@ -13,6 +11,3 @@ instructions.db-trace
 instructions.db-trace.lock
 instructions.db-trace.lock.lock
 instructions.db-trace.lock.lock.lock
-
-.*/
-.env 
