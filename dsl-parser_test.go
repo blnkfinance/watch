@@ -941,7 +941,58 @@ func TestCompileBlockIfPreviousFailedScript(t *testing.T) {
 
 	// Should have conditions
 	if len(rule.When) == 0 {
-		t.Error("expected at least one when condition")
+		t.Fatal("expected at least one when condition")
+	}
+
+	// Parser must emit "previous_transaction" (not "function_comparison") so the interpreter evaluates it.
+	var foundPrevTx bool
+	for _, raw := range rule.When {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(raw, &probe)
+		if probe.Type == "previous_transaction" {
+			foundPrevTx = true
+			var pc struct {
+				TimeWindow string                 `json:"time_window"`
+				Match      map[string]interface{} `json:"match"`
+			}
+			_ = json.Unmarshal(raw, &pc)
+			if pc.TimeWindow != "PT1H" {
+				t.Errorf("expected time_window PT1H, got %q", pc.TimeWindow)
+			}
+			if pc.Match["source"] != "$current.source" || pc.Match["status"] != "failed" {
+				t.Errorf("expected match source=$current.source, status=failed; got %v", pc.Match)
+			}
+			break
+		}
+		if probe.Type == "logical" {
+			var l struct {
+				Left json.RawMessage `json:"left"`
+			}
+			_ = json.Unmarshal(raw, &l)
+			if len(l.Left) > 0 {
+				var inner struct {
+					Type string `json:"type"`
+				}
+				_ = json.Unmarshal(l.Left, &inner)
+				if inner.Type == "previous_transaction" {
+					foundPrevTx = true
+					var pc struct {
+						TimeWindow string                 `json:"time_window"`
+						Match      map[string]interface{} `json:"match"`
+					}
+					_ = json.Unmarshal(l.Left, &pc)
+					if pc.TimeWindow != "PT1H" {
+						t.Errorf("expected time_window PT1H, got %q", pc.TimeWindow)
+					}
+					break
+				}
+			}
+		}
+	}
+	if !foundPrevTx {
+		t.Errorf("expected a previous_transaction condition in when; got: %s", ruleJSON)
 	}
 
 	t.Logf("Generated JSON: %s", ruleJSON)
@@ -1409,6 +1460,142 @@ func TestSuspiciousDescriptionCheckScript(t *testing.T) {
 	}
 
 	t.Logf("Generated JSON: %s", ruleJSON)
+}
+
+func TestCompileWatchScriptTimeFunctionEmitsTimeFunctionType(t *testing.T) {
+	// Parser should emit "time_function" (not "function_comparison") so the interpreter evaluates it.
+	input := `rule TimeHourOfDay {
+  description "Review transactions in late night window."
+  when hour_of_day(created_at) >= 21
+  or hour_of_day(created_at) <= 3
+  then review
+       score   0.5
+       reason  "Transaction in late night window"
+}`
+
+	_, _, ruleJSON, err := CompileWatchScript(input)
+	if err != nil {
+		t.Fatalf("compilation error: %v", err)
+	}
+
+	var rule Rule
+	if err := json.Unmarshal([]byte(ruleJSON), &rule); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+
+	if len(rule.When) == 0 {
+		t.Fatal("expected at least one when condition")
+	}
+
+	// When has "logical" (or) with left/right; each side may be time_function
+	var findTimeFunctionConditions func(raw []json.RawMessage) []map[string]interface{}
+	findTimeFunctionConditions = func(raw []json.RawMessage) []map[string]interface{} {
+		var out []map[string]interface{}
+		for _, r := range raw {
+			var probe struct {
+				Type string `json:"type"`
+			}
+			_ = json.Unmarshal(r, &probe)
+			if probe.Type == "time_function" {
+				var m map[string]interface{}
+				_ = json.Unmarshal(r, &m)
+				out = append(out, m)
+			}
+			if probe.Type == "logical" {
+				var l struct {
+					Left  json.RawMessage `json:"left"`
+					Right json.RawMessage `json:"right"`
+				}
+				_ = json.Unmarshal(r, &l)
+				if len(l.Left) > 0 {
+					out = append(out, findTimeFunctionConditions([]json.RawMessage{l.Left})...)
+				}
+				if len(l.Right) > 0 {
+					out = append(out, findTimeFunctionConditions([]json.RawMessage{l.Right})...)
+				}
+			}
+		}
+		return out
+	}
+
+	conds := findTimeFunctionConditions(rule.When)
+	if len(conds) == 0 {
+		t.Fatalf("expected at least one condition with type time_function; when: %s", ruleJSON)
+	}
+	for i, c := range conds {
+		if c["type"] != "time_function" {
+			t.Errorf("condition %d: expected type time_function, got %v", i, c["type"])
+		}
+		if c["function"] != "hour_of_day" {
+			t.Errorf("condition %d: expected function hour_of_day, got %v", i, c["function"])
+		}
+		if c["field"] != "created_at" {
+			t.Errorf("condition %d: expected field created_at, got %v", i, c["field"])
+		}
+	}
+}
+
+func TestCompileWatchScriptDayOfWeekInEmitsTimeFunctionType(t *testing.T) {
+	input := `rule TimeDayOfWeek {
+  description "Review large transactions on weekend."
+  when day_of_week(created_at) in (0, 6)
+  and amount > 3000
+  then review
+       score   0.4
+       reason  "Large weekend transaction"
+}`
+
+	_, _, ruleJSON, err := CompileWatchScript(input)
+	if err != nil {
+		t.Fatalf("compilation error: %v", err)
+	}
+
+	var rule Rule
+	if err := json.Unmarshal([]byte(ruleJSON), &rule); err != nil {
+		t.Fatalf("invalid JSON output: %v", err)
+	}
+
+	// Find time_function in when (may be under logical "and")
+	var found bool
+	for _, raw := range rule.When {
+		var probe struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(raw, &probe)
+		if probe.Type == "time_function" {
+			found = true
+			var tc struct {
+				Function string      `json:"function"`
+				Field    string      `json:"field"`
+				Op       string      `json:"op"`
+				Value    interface{} `json:"value"`
+			}
+			_ = json.Unmarshal(raw, &tc)
+			if tc.Function != "day_of_week" || tc.Field != "created_at" || tc.Op != "in" {
+				t.Errorf("expected day_of_week(created_at) in (...); got function=%q field=%q op=%q", tc.Function, tc.Field, tc.Op)
+			}
+			break
+		}
+		if probe.Type == "logical" {
+			var l struct {
+				Left json.RawMessage `json:"left"`
+			}
+			_ = json.Unmarshal(raw, &l)
+			if len(l.Left) > 0 {
+				var inner struct {
+					Type string `json:"type"`
+				}
+				_ = json.Unmarshal(l.Left, &inner)
+				if inner.Type == "time_function" {
+					found = true
+					break
+				}
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a time_function condition in when; got: %s", ruleJSON)
+	}
 }
 
 func TestParserReservedKeywordsAsFields(t *testing.T) {

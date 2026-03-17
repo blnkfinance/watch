@@ -419,21 +419,41 @@ func evalTimeFunction(tx map[string]any, c TimeFunctionCond) (bool, error) {
 		return false, fmt.Errorf("unsupported time function: %s", c.Function)
 	}
 
+	// day_of_week with "in" and list of day names (e.g. "Saturday", "Sunday")
 	if c.Function == "day_of_week" && c.Op == "in" {
-		if values, ok := c.Value.([]interface{}); ok {
-			for _, v := range values {
-				if dayStr, ok := v.(string); ok {
-					if strings.Title(strings.ToLower(dayStr)) == ts.Weekday().String() {
-						return true, nil
+		if values, ok := c.Value.([]interface{}); ok && len(values) > 0 {
+			if _, isStr := values[0].(string); isStr {
+				for _, v := range values {
+					if dayStr, ok := v.(string); ok {
+						if strings.EqualFold(dayStr, ts.Weekday().String()) {
+							return true, nil
+						}
 					}
 				}
+				return false, nil
 			}
-			return false, nil
 		}
+	}
+
+	// in / not_in with numeric (or other) lists, e.g. day_of_week(timestamp) in (0, 6)
+	if c.Op == "in" || c.Op == "not_in" {
+		return compareList(float64(result), c.Op, c.Value)
 	}
 
 	return compareScalar(float64(result), c.Op, c.Value)
 }
+
+// transactionsTableColumns are the columns that exist on the transactions table.
+// previous_transaction match keys that are not in this set are interpreted as
+// paths into the metadata JSON (meta_data.field or metadata.field).
+var transactionsTableColumns = map[string]bool{
+	"transaction_id": true, "amount": true, "currency": true,
+	"source": true, "destination": true, "timestamp": true,
+	"description": true, "metadata": true,
+}
+
+const metadataColumnPrefixMetaData = "meta_data."
+const metadataColumnPrefixMetadata = "metadata."
 
 func evalPreviousTransaction(tx map[string]any, pc PreviousTransactionCond) (bool, error) {
 	db, err := getDB()
@@ -445,26 +465,55 @@ func evalPreviousTransaction(tx map[string]any, pc PreviousTransactionCond) (boo
 	if err != nil {
 		return false, err
 	}
-	start := time.Now().Add(-dur)
+
+	// Use the current transaction's timestamp as the window end (not time.Now()), so that
+	// "previous within PT1H" means "in the 1h before this transaction", and works with
+	// injected test data that has past timestamps.
+	refTime, err := getTransactionTime(tx)
+	if err != nil {
+		return false, err
+	}
+	start := refTime.Add(-dur)
 
 	var conditions []string
 	var args []interface{}
 
 	for field, value := range pc.Match {
+		var cond string
+		var arg interface{}
+
 		if strValue, ok := value.(string); ok && strings.HasPrefix(strValue, "$current.") {
 			fieldPath := strings.TrimPrefix(strValue, "$current.")
-			if currentValue, exists := dig(tx, fieldPath); exists {
-				conditions = append(conditions, field+" = ?")
-				args = append(args, currentValue)
+			currentValue, exists := dig(tx, fieldPath)
+			if !exists {
+				continue
+			}
+			arg = currentValue
+			if transactionsTableColumns[field] {
+				cond = field + " = ?"
+			} else if strings.HasPrefix(field, metadataColumnPrefixMetaData) || strings.HasPrefix(field, metadataColumnPrefixMetadata) {
+				jsonPath := "$." + strings.TrimPrefix(strings.TrimPrefix(field, metadataColumnPrefixMetaData), metadataColumnPrefixMetadata)
+				cond = fmt.Sprintf("json_extract_string(metadata, %s) = ?", quoteSQLString(jsonPath))
+			} else {
+				continue
 			}
 		} else {
-			conditions = append(conditions, field+" = ?")
-			args = append(args, value)
+			arg = value
+			if transactionsTableColumns[field] {
+				cond = field + " = ?"
+			} else if strings.HasPrefix(field, metadataColumnPrefixMetaData) || strings.HasPrefix(field, metadataColumnPrefixMetadata) {
+				jsonPath := "$." + strings.TrimPrefix(strings.TrimPrefix(field, metadataColumnPrefixMetaData), metadataColumnPrefixMetadata)
+				cond = fmt.Sprintf("json_extract_string(metadata, %s) = ?", quoteSQLString(jsonPath))
+			} else {
+				continue
+			}
 		}
+		conditions = append(conditions, cond)
+		args = append(args, arg)
 	}
 
-	conditions = append(conditions, "timestamp >= ?")
-	args = append(args, start.UTC().Format("2006-01-02 15:04:05"))
+	conditions = append(conditions, "timestamp >= ? AND timestamp < ?")
+	args = append(args, start.UTC(), refTime.UTC())
 
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) 
@@ -480,6 +529,31 @@ func evalPreviousTransaction(tx map[string]any, pc PreviousTransactionCond) (boo
 	}
 
 	return count > 0, nil
+}
+
+// getTransactionTime returns the current transaction's timestamp from the map (created_at).
+func getTransactionTime(tx map[string]any) (time.Time, error) {
+	got, ok := dig(tx, "created_at")
+	if !ok {
+		return time.Time{}, fmt.Errorf("transaction has no created_at for previous_transaction window")
+	}
+	switch v := got.(type) {
+	case time.Time:
+		return v, nil
+	case string:
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("created_at not RFC3339: %w", err)
+		}
+		return t, nil
+	default:
+		return time.Time{}, fmt.Errorf("created_at is not a time or string, got %T", got)
+	}
+}
+
+// quoteSQLString returns a single-quoted string safe for use in SQL (escapes single quotes).
+func quoteSQLString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 func evalLogical(tx map[string]any, lc LogicalCond, agg map[string]float64) (bool, error) {

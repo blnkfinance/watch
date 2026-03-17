@@ -138,6 +138,7 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 		"destination":    t.Destination,
 		"description":    t.Description,
 		"meta_data":      t.MetaData,
+		"created_at":     t.CreatedAt,
 	}
 
 	aggCtx, err := BuildAggContext(context.Background(), db, transactionMap, activeRules)
