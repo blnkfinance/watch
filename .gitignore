@@ -11,3 +11,9 @@ instructions.db-trace
 instructions.db-trace.lock
 instructions.db-trace.lock.lock
 instructions.db-trace.lock.lock.lock
+
+.env
+.me/
+watch_scripts/
+watch_scripts_backup/
+blnk_watch_db/
