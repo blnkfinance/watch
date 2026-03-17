@@ -1350,8 +1350,8 @@ func infixToCondition(expr *InfixExpression) (interface{}, error) {
 			return nil, fmt.Errorf("invalid value in condition: %w", err)
 		}
 
-		// Emit "aggregate" type so the interpreter recognizes sum/count (it does not handle "function_comparison").
-		if funcCall.Name == "sum" || funcCall.Name == "count" {
+		// Emit "aggregate" type so the interpreter recognizes sum/count/avg/max/min (it does not handle "function_comparison").
+		if funcCall.Name == "sum" || funcCall.Name == "count" || funcCall.Name == "avg" || funcCall.Name == "max" || funcCall.Name == "min" {
 			return functionCallToAggregateCondition(funcCall, op, value)
 		}
 
@@ -1390,8 +1390,8 @@ func infixToCondition(expr *InfixExpression) (interface{}, error) {
 	}, nil
 }
 
-// functionCallToAggregateCondition converts sum(...) / count(...) comparisons into the
-// "aggregate" condition format that the interpreter expects (it does not handle "function_comparison").
+// functionCallToAggregateCondition converts sum(...) / count(...) / avg(...) / max(...) / min(...) comparisons
+// into the "aggregate" condition format that the interpreter expects (it does not handle "function_comparison").
 func functionCallToAggregateCondition(funcCall *FunctionCall, op string, value interface{}) (interface{}, error) {
 	if len(funcCall.Arguments) < 2 {
 		return nil, fmt.Errorf("aggregate function %s requires 2 arguments (conditional, time_window)", funcCall.Name)
@@ -1400,14 +1400,15 @@ func functionCallToAggregateCondition(funcCall *FunctionCall, op string, value i
 	if !ok {
 		return nil, fmt.Errorf("first argument to %s must be a conditional (e.g. amount when source == $current.source)", funcCall.Name)
 	}
-	// sum() requires a value (e.g. amount); count() can be count(when condition, "PT1H") with no value
-	if funcCall.Name == "sum" {
+	// sum/avg/max/min require a value (e.g. amount); count() can be count(when condition, "PT1H") with no value
+	valueRequiringMetrics := map[string]bool{"sum": true, "avg": true, "max": true, "min": true}
+	if valueRequiringMetrics[funcCall.Name] {
 		if condExpr.Value == nil {
-			return nil, fmt.Errorf("sum() conditional must have a value (e.g. amount when source == $current.source)")
+			return nil, fmt.Errorf("%s() conditional must have a value (e.g. amount when source == $current.source)", funcCall.Name)
 		}
 		_, err := expressionToFieldPath(condExpr.Value)
 		if err != nil {
-			return nil, fmt.Errorf("sum() value must be a field (e.g. amount): %w", err)
+			return nil, fmt.Errorf("%s() value must be a field (e.g. amount): %w", funcCall.Name, err)
 		}
 	}
 	filterCond, err := expressionToCondition(condExpr.Condition)
