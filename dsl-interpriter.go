@@ -683,22 +683,34 @@ func aggKey(ac AggregateCond, filterVal string) string {
 
 func parseISODuration(iso string) (time.Duration, error) {
 	if strings.HasPrefix(iso, "PT") {
-		iso = strings.TrimPrefix(iso, "PT")
-		if strings.HasSuffix(iso, "H") {
-			n, _ := strconv.Atoi(strings.TrimSuffix(iso, "H"))
+		trimmed := strings.TrimPrefix(iso, "PT")
+		if strings.HasSuffix(trimmed, "H") {
+			n, err := strconv.Atoi(strings.TrimSuffix(trimmed, "H"))
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %s: %w", iso, err)
+			}
 			return time.Duration(n) * time.Hour, nil
 		}
-		if strings.HasSuffix(iso, "M") {
-			n, _ := strconv.Atoi(strings.TrimSuffix(iso, "M"))
+		if strings.HasSuffix(trimmed, "M") {
+			n, err := strconv.Atoi(strings.TrimSuffix(trimmed, "M"))
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %s: %w", iso, err)
+			}
 			return time.Duration(n) * time.Minute, nil
 		}
-		if strings.HasSuffix(iso, "S") {
-			n, _ := strconv.Atoi(strings.TrimSuffix(iso, "S"))
+		if strings.HasSuffix(trimmed, "S") {
+			n, err := strconv.Atoi(strings.TrimSuffix(trimmed, "S"))
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %s: %w", iso, err)
+			}
 			return time.Duration(n) * time.Second, nil
 		}
 	}
 	if strings.HasPrefix(iso, "P") && strings.HasSuffix(iso, "D") {
-		n, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(iso, "P"), "D"))
+		n, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(iso, "P"), "D"))
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %s: %w", iso, err)
+		}
 		return time.Duration(n) * 24 * time.Hour, nil
 	}
 	return 0, fmt.Errorf("unsupported duration format: %s", iso)

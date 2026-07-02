@@ -233,7 +233,7 @@ func GetTopInstructionsWithDSLExamples(limit int) ([]Instruction, error) {
 	query := `
 		SELECT id, name, text, description, CAST(dsl_json AS VARCHAR), created_at, updated_at
 		FROM instructions
-		WHERE dsl_json IS NOT NULL AND dsl_json != ''
+		WHERE dsl_json IS NOT NULL AND dsl_json != '""'::JSON
 		ORDER BY updated_at DESC
 		LIMIT ?;
 	`
