@@ -305,7 +305,45 @@ Compares the global active rules set with an expected rules set, verifying:
 - Validity status is correct
 
 ## Benchmark Results
-TODO: 
+
+All benchmark runs were executed on Intel(R) Core(TM) i3-1005561 CPU @ 1.20GHz running Linux AMD64.
+
+#### Previous Implementation (Database Query Per Transaction)
+
+| Run | Iterations | ns/op | B/op | Allocs/op |
+|-----|------------|------------------|-------------------|-------------|
+| 1 | 1134 | 974,706 | 20,568 | 433 |
+| 2 | 1154 | 940,815 | 20,567 | 433 |
+| 3 | 1194 | 924,216 | 20,571 | 433 |
+
+**Average**: 
+- Time: 946,579 ns/op
+- Memory: 20,569 B/op
+- Allocations: 433 allocs/op
+
+#### New Implementation (In-Memory Set)
+
+| Run | Iterations | ns/op | B/op | Allocs/op |
+|-----|------------|------------------|-------------------|-------------|
+| 1 | 55,298 | 21,304 | 5,224 | 140 |
+| 2 | 58,314 | 20,297 | 5,224 | 140 |
+| 3 | 55,659 | 20,825 | 5,224 | 140 |
+
+**Average**: 
+- Time: 20,809 ns/op
+- Memory: 5,224 B/op
+- Allocations: 140 allocs/op
+
+### Performance Improvements
+
+#### Summary Comparison
+
+| Metric | Previous | New | Improvement |
+|--------|----------|-----|-------------|
+| **Execution Time** | 946,579 ns/op | 20,809 ns/op | **~45.5x faster** |
+| **Memory per Op** | 20,569 B/op | 5,224 B/op | **~3.9x less memory** |
+| **Allocations** | 433 | 140 | **~3.1x fewer allocations** |
+| **Iterations (sample size)** | 1,134-1,194 | 55,298-58,314 | **~48x more runs possible** |
 
 ### Aggregate Condition Caching
 - Pre-computed once per rule set
