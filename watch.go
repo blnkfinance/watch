@@ -134,7 +134,9 @@ func RunWatchService(ctx context.Context, port string, tunnel interface{}) error
 		defer CloseTransactionsDB()
 	}
 
-	startRiskEvaluationWorker()
+	if err := startRiskEvaluationWorker(); err != nil {
+		return fmt.Errorf("startRiskEvaluationWorker: %w", err)
+	}
 
 	watchScriptDir := os.Getenv("WATCH_SCRIPT_DIR")
 

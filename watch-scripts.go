@@ -41,6 +41,9 @@ func updateInstructionDSL(db *sql.DB, id int64, dslJSON string) error {
 		log.Error().Err(err).Int64("id", id).Msg("Error executing update DSL statement")
 		return err
 	}
+
+	globalActiveRulesSet.invalidate()
+
 	log.Debug().Int64("id", id).Msg("Successfully updated DSL JSON for instruction")
 	return nil
 }
@@ -172,6 +175,8 @@ func DeleteInstruction(id int64) error {
 		log.Warn().Int64("id", id).Msg("Delete instruction called but no rows were affected (ID might not exist)")
 		return fmt.Errorf("instruction with ID %d not found for deletion", id)
 	}
+
+	globalActiveRulesSet.invalidate()
 
 	log.Info().Int64("id", id).Msg("Successfully deleted instruction")
 	return nil
@@ -347,6 +352,8 @@ func UpdateInstructionWithPrecompiledDSL(ctx context.Context, id int64, name, sc
 		log.Warn().Int64("id", id).Str("name", name).Msg("Update instruction with precompiled DSL called, but no rows were affected (ID might not exist)")
 		return Instruction{}, fmt.Errorf("instruction with ID %d not found for update", id)
 	}
+
+	globalActiveRulesSet.invalidate()
 
 	updatedInstruction, fetchErr := getInstructionByIDInternal(instructionDB, id)
 	if fetchErr != nil {

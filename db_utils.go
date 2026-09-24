@@ -149,6 +149,9 @@ func CloseInstructionDB() {
 	}
 }
 
+// createInstructionRecord creates a new instruction without a dsl_json field. Hence, this
+// instruction is not an "active" rule and there is no need to invalidate global active
+// rules cache when it inserts an instruction in the DB.
 func createInstructionRecord(db *sql.DB, name, text, description string) (int64, error) {
 	query := `
 		INSERT INTO instructions (name, text, description)

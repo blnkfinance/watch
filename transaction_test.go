@@ -18,6 +18,7 @@ package watch
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -233,5 +234,70 @@ func TestCopyTransactionsRequiresDBURL(t *testing.T) {
 	}
 	if err := CopyAllTransactionsFromPostgreSQL(); err == nil || !strings.Contains(err.Error(), "DB_URL") {
 		t.Errorf("expected DB_URL error, got %v", err)
+	}
+}
+
+func BenchmarkProcessTransactionBatch(b *testing.B) {
+	t := &testing.T{}
+	clearTransactions(t)
+	clearInstructions(t)
+
+	// insert 10 instructions into instruction DB
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("bench-rule-%d", i)
+		dsl := fmt.Sprintf(
+			`{"id":%d,"name":"%s","when":[{"field":"amount","op":"gt","value":%d}],"then":{"verdict":"review","score":0.5,"reason":"benchmark"}}`, 
+			i, name, i * 1000,
+		)
+		if _, err := CreateInstructionWithPrecompiledDSL(context.Background(), name, "text", "", dsl); err != nil {
+			b.Fatalf("create instruction: %v", err)
+		}
+	}
+	
+	// insert 100 txns into transaction DB
+	ts := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for i := 1; i <= 100; i++ {
+		amount := float64(i * 100)
+		insertTestTransaction(t, fmt.Sprintf("bench-tx-%d", i), amount, "USD", "s", "d", ts, "", "")
+	}
+	b.ResetTimer()
+	for b.Loop() {
+		processTransactionBatch()
+	}
+}
+
+func BenchmarkEvaluateTransaction(b *testing.B) {
+	t := &testing.T{}
+	clearTransactions(t)
+	clearInstructions(t)
+
+	// insert 10 instructions into instruction DB
+	for i := 1; i <= 10; i++ {
+		name := fmt.Sprintf("bench-rule-%d", i)
+		dsl := fmt.Sprintf(
+			`{"id":%d,"name":"%s","when":[{"field":"amount","op":"gt","value":%d}],"then":{"verdict":"review","score":0.5,"reason":"benchmark"}}`, 
+			i, name, i * 1000,
+		)
+		if _, err := CreateInstructionWithPrecompiledDSL(context.Background(), name, "text", "", dsl); err != nil {
+			b.Fatalf("create instruction: %v", err)
+		}
+	}
+
+	transaction := Transaction{
+		TransactionID: "bench-eval-tx",
+		Amount:        1000,
+		Currency:      "USD",
+		Source:        "s",
+		Destination:   "d",
+		CreatedAt:     time.Now().UTC(),
+		MetaData:     make(map[string]interface{}),
+	}
+
+	b.ResetTimer()
+	for b.Loop(){
+		_, err := evaluateTransaction(transaction)
+		if err != nil {
+			b.Fatalf("evaluate transaction: %v", err)
+		}
 	}
 }

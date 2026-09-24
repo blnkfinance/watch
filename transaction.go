@@ -124,10 +124,8 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 		return t, fmt.Errorf("failed to get database connection: %w", err)
 	}
 
-	activeRules, err := getActiveRules()
-	if err != nil {
-		fmt.Printf("failed to get active rules: %+v\n", err)
-		return t, fmt.Errorf("failed to get active rules: %w", err)
+	if err = globalActiveRulesSet.populate(); err != nil {
+		return t, fmt.Errorf("failed to populate rules cache: %w", err)
 	}
 
 	transactionMap := map[string]any{
@@ -141,18 +139,19 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 		"created_at":     t.CreatedAt,
 	}
 
-	aggCtx, err := BuildAggContext(context.Background(), db, transactionMap, activeRules)
+	aggCtx, err := BuildAggContext(context.Background(), db, transactionMap, globalActiveRulesSet.aggrConds)
 	if err != nil {
 		return t, fmt.Errorf("failed to build aggregate context: %w", err)
 	}
-	verdicts, err := EvaluateRules(transactionMap, activeRules, aggCtx)
+	verdicts, err := EvaluateRules(transactionMap, globalActiveRulesSet.rules, aggCtx)
 	if err != nil {
 		return t, fmt.Errorf("failed to evaluate rules: %w", err)
 	}
 
-	log.Info().
-		Str("transaction_id", t.TransactionID).
-		Msg("Blnk Watch evaluation complete.")
+	// TODO: uncomment this line before committing.
+	// log.Info().
+	// 	Str("transaction_id", t.TransactionID).
+	// 	Msg("Blnk Watch evaluation complete.")
 
 	t.MetaData["dsl_verdicts"] = verdicts
 	t.MetaData["risk_evaluation_timestamp"] = time.Now()
@@ -329,8 +328,12 @@ func getTransactionByID(transactionID string) (Transaction, error) {
 	return t, nil
 }
 
-func startRiskEvaluationWorker() {
+func startRiskEvaluationWorker() error {
 	log.Info().Msg("Starting risk evaluation worker")
+
+	if err := globalActiveRulesSet.populate(); err != nil {
+		return fmt.Errorf("error populating rules cache: %w", err)
+	}
 
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
@@ -340,6 +343,8 @@ func startRiskEvaluationWorker() {
 			processTransactionBatch()
 		}
 	}()
+
+	return nil
 }
 
 func processTransactionBatch() {
@@ -364,7 +369,6 @@ func processTransactionBatch() {
 			continue
 		}
 	}
-
 }
 
 // processTransactionRiskEvaluation processes a single transaction for risk evaluation
