@@ -148,10 +148,9 @@ func evaluateTransaction(t Transaction) (Transaction, error) {
 		return t, fmt.Errorf("failed to evaluate rules: %w", err)
 	}
 
-	// TODO: uncomment this line before committing.
-	// log.Info().
-	// 	Str("transaction_id", t.TransactionID).
-	// 	Msg("Blnk Watch evaluation complete.")
+	log.Info().
+		Str("transaction_id", t.TransactionID).
+		Msg("Blnk Watch evaluation complete.")
 
 	t.MetaData["dsl_verdicts"] = verdicts
 	t.MetaData["risk_evaluation_timestamp"] = time.Now()

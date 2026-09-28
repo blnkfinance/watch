@@ -237,6 +237,7 @@ func TestCopyTransactionsRequiresDBURL(t *testing.T) {
 	}
 }
 
+// TODO: Need to remove this before pushing.
 func BenchmarkProcessTransactionBatch(b *testing.B) {
 	t := &testing.T{}
 	clearTransactions(t)
