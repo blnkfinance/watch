@@ -2,9 +2,17 @@
 
 ## Implementation Overview
 
-The `activeRulesSet` ensures that rule evaluation during transaction processing always uses the latest rules without requiring a database hit on every transaction. It uses atomics and mutexes for safe concurrent access. The previous
-implementation hit the database for every transaction to get the active rules,
-despite the likelihood of the rules having not changed.
+The `activeRulesSet` ensures that rule evaluation during transaction processing always uses the latest rules without requiring a database hit on every transaction. It uses atomics and mutexes for safe concurrent access. The previous implementation hit the database for every transaction to get the active rules, despite the likelihood of the rules having not changed. See benchmark comparisons here(#benchmark-results)
+
+`globalActiveRulesSet` is created by `newActiveRulesSet`. `newActiveRulesSet`
+sets `invalidatedCount = 1` and `level = 0`. This marks the
+`globalActiveRulesSet` as invalid on initialization. When 
+`globalActiveRulesSet.populate` is called for the first time. It sees that the
+`globalActiveRulesSet` is invalid and it populates the rules set under a mutex
+lock and marks the `globalActiveRulesSet` as valid by setting 
+`level = invalidatedCount`.
+
+`startRiskEvaluationWorker` which spins off a goroutine to periodically process transaction batches will ensure `globalActiveRulesSet` is populated before spinning off the goroutine. It will return an error if the populate operation fails.
 
 ## Implementation Details
 
@@ -21,14 +29,6 @@ type activeRulesSet struct {
 ```
 
 ### Validity Mechanism
-
-`globalActiveRulesSet` is created by `newActiveRulesSet`. `newActiveRulesSet`
-sets `invalidatedCount = 1` and `level = 0`. This marks the
-`globalActiveRulesSet` as invalid on initialization. When 
-`globalActiveRulesSet.populate` is called for the first time. It sees that the
-`globalActiveRulesSet` is invalid and it populates the rules set under a mutex
-lock and marks the `globalActiveRulesSet` as valid by setting 
-`level = invalidatedCount`.
 
 Whenever an operation modifies the rules in the DB, it invalidates the 
 `globalActiveRulesSet` by increasing `invalidatedCount` by 1. Since `invalidatedCount` is an `atomic.Uint64`, concurrent DB modifications can 
@@ -72,7 +72,6 @@ Fetches active rules from the database and rebuilds aggregate conditions. This i
 **Thread Safety**: 
 - Read path (`isValid()`) requires no lock
 - Write path (`populate()`) holds a lock during database operations and updates
-- The mutex protects only the actual data modification, not the validity check
 
 #### `isValid()`
 Non-blocking check for whether the cache is current.
@@ -96,9 +95,7 @@ func (rc *activeRulesSet) invalidate() {
 ```
 
 **Called When**:
-- New rule is created
-- Existing rule is updated
-- Existing rule is deleted
+New rule is created or existing rule is updated or deleted, via direct programmatic modification or API calls.
 
 #### `clear()`
 Resets the rules set to a pristine state. Primarily used in tests.
@@ -129,11 +126,11 @@ shared across the application
 
 **File**: `transaction.go`
 
-The primary integration point is in the `processTransactionRiskEvaluation()` function:
+The primary integration point is in the `evaluateTransaction()` function:
 
 ```go
-func processTransactionRiskEvaluation(txn Transaction) error {
-    // ... transaction setup ...
+func evaluateTransaction(t Transaction) error {
+    // ...
     
     if err = globalActiveRulesSet.populate(); err != nil {
         return fmt.Errorf("failed to populate rules cache: %w", err)
@@ -144,19 +141,8 @@ func processTransactionRiskEvaluation(txn Transaction) error {
     if err != nil {
         return fmt.Errorf("failed to build aggregate context: %w", err)
     }
-    
-    // Evaluate rules
-    verdicts, err := EvaluateRules(transactionMap, globalActiveRulesSet.rules, aggCtx)
-    if err != nil {
-        return fmt.Errorf("failed to evaluate rules: %w", err)
-    }
-    
-    // Store evaluation results
-    t.MetaData["dsl_verdicts"] = verdicts
-    t.MetaData["risk_evaluation_timestamp"] = time.Now()
-    t.MetaData["evaluation_status"] = "completed"
-    
-    return nil
+
+    // ...
 }
 ```
 
@@ -166,9 +152,7 @@ func processTransactionRiskEvaluation(txn Transaction) error {
 3. If invalid, rules are fetched and aggregate conditions are rebuilt
 
 This prevents the behaviour of calling `getActiveRules` repeatedly for
-every transaction. `processTransactionRiskEvaluation` is called by `processTransactionBatch` which is called every 100ms to process a batch of 10 transactions. calling `getActiveRules` for every transaction in the batch, despite the rules likely not having changed is costly as already mentioned.
-
-`startRiskEvaluationWorker` which spins off a goroutine to periodically (every 100ms), call `processTransactionBatch`, will try to populate `globalActiveRulesSet` before spinning off this goroutine. It will return an error, if the populate operation fails.
+every transaction. `evaluateTransaction` is called for each transaction during batch processing. By caching the active rules set, we avoid calling `getActiveRules` for every transaction in the batch, despite the rules likely not having changed, which would be costly as already mentioned.
 
 ### Rule Creation/Update/Deletion
 
@@ -176,9 +160,9 @@ every transaction. `processTransactionRiskEvaluation` is called by `processTrans
 
 Rule mutations trigger invalidation of `globalActiveRulesSet`:
 
-**Creating a Rule**:
+**Creating an Active Rule**:
 ```go
-// In CreateInstructionWithPrecompiledDSL or createInstructionRecord
+// In CreateInstructionWithPrecompiledDSL
 globalActiveRulesSet.invalidate()  // Mark cache as stale
 ```
 
@@ -205,7 +189,12 @@ globalActiveRulesSet.invalidate()  // Mark cache as stale
 
 ### Aggregate Conditions
 
-Aggregate conditions are derived from the rule set and used during transaction evaluation:
+Aggregate conditions are constant per rule set.
+
+**Aggregate Condition Caching**
+- Pre-computed once per rule set
+- Reused for every transaction until rules change
+- Avoids parsing aggregate conditions for every transaction
 
 ```go
 // In populate()
@@ -276,22 +265,9 @@ This verifies that when rule modifications occur while processing a transaction 
 4. Verify invalidation counter is incremented correctly for all concurrent operations
 5. Verify cache can be repopulated to include all concurrently-created rules
 
-**Verification Points**:
-- `invalidatedCount` reflects all concurrent invalidations (starts at 1, incremented twice → final count: 3)
-- Cache is invalid after concurrent operations: `isValid()` returns `false`
-- Cache successfully repopulates with all rules from concurrent operations
-- Aggregate conditions are correctly built for all rules
-- No race conditions or data corruption
-
 #### 7. Return error on Database Failure (`TestActiveRulesSet_PopulateReturnsErrorOnDatabaseFailure`)
 
 **Purpose**: Verify that `populate()` returns an error when database operations fail and that the rules set remains invalid.
-
-**Test Scenario**:
-1. Invalidate the rules set (simulate need to refresh)
-2. Simulate database connection failure by setting `instructionDB = nil`
-3. Call `populate()` and verify it returns the expected error
-4. Verify the rules set remains invalid after the failed attempt
 
 ### Helper Test Functions
 
@@ -304,9 +280,16 @@ Compares the global active rules set with an expected rules set, verifying:
 - Aggregate conditions match
 - Validity status is correct
 
+#### 8. Aggregate Condition Building Test (`TestBuildAggregateConds`)
+
+**Purpose**: Test the aggregate condition building logic in `buildAggregateConds()`
+### Benchmark Test
+
+`BenchmarkEvaluateTransaction` measures the performance of the `evaluateTransaction()` function.
+
 ## Benchmark Results
 
-All benchmark runs were executed on Intel(R) Core(TM) i3-1005561 CPU @ 1.20GHz running Linux AMD64.
+Benchmark runs were executed on Intel(R) Core(TM) i3-1005561 CPU @ 1.20GHz running Linux AMD64.
 
 #### Previous Implementation (Database Query Per Transaction)
 
@@ -325,13 +308,13 @@ All benchmark runs were executed on Intel(R) Core(TM) i3-1005561 CPU @ 1.20GHz r
 
 | Run | Iterations | ns/op | B/op | Allocs/op |
 |-----|------------|------------------|-------------------|-------------|
-| 1 | 55,298 | 21,304 | 5,224 | 140 |
-| 2 | 58,314 | 20,297 | 5,224 | 140 |
-| 3 | 55,659 | 20,825 | 5,224 | 140 |
+| 1 | 18,537 | 64,085 | 5,226 | 140 |
+| 2 | 15,316 | 71,766 | 5,226 | 140 |
+| 3 | 16,850 | 61,441 | 5,226 | 140 |
 
 **Average**: 
-- Time: 20,809 ns/op
-- Memory: 5,224 B/op
+- Time: 65,764 ns/op
+- Memory: 5,226 B/op
 - Allocations: 140 allocs/op
 
 ### Performance Improvements
@@ -340,12 +323,7 @@ All benchmark runs were executed on Intel(R) Core(TM) i3-1005561 CPU @ 1.20GHz r
 
 | Metric | Previous | New | Improvement |
 |--------|----------|-----|-------------|
-| **Execution Time** | 946,579 ns/op | 20,809 ns/op | **~45.5x faster** |
-| **Memory per Op** | 20,569 B/op | 5,224 B/op | **~3.9x less memory** |
+| **Execution Time** | 946,579 ns/op | 65,764 ns/op | **~14.4x faster** |
+| **Memory per Op** | 20,569 B/op | 5,226 B/op | **~3.9x less memory** |
 | **Allocations** | 433 | 140 | **~3.1x fewer allocations** |
-| **Iterations (sample size)** | 1,134-1,194 | 55,298-58,314 | **~48x more runs possible** |
-
-### Aggregate Condition Caching
-- Pre-computed once per rule set
-- Reused for every transaction until rules change
-- Avoids parsing aggregate conditions for every transaction
+| **Iterations (sample size)** | 1,134-1,194 | 15,316-18,537 | **~13-16x more runs possible** |
