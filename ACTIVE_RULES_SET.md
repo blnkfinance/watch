@@ -2,7 +2,7 @@
 
 ## Implementation Overview
 
-The `activeRulesSet` ensures that rule evaluation during transaction processing always uses the latest rules without requiring a database hit on every transaction. It uses atomics and mutexes for safe concurrent access. The previous implementation hit the database for every transaction to get the active rules, despite the likelihood of the rules having not changed. See benchmark comparisons here(#benchmark-results)
+The `activeRulesSet` ensures that rule evaluation during transaction processing always uses the latest rules without requiring a database hit on every transaction. It uses atomics and mutexes for safe concurrent access. The previous implementation hit the database for every transaction to get the active rules, despite the likelihood of the rules having not changed. See benchmark comparisons [here](#benchmark-results)
 
 `globalActiveRulesSet` is created by `newActiveRulesSet`. `newActiveRulesSet`
 sets `invalidatedCount = 1` and `level = 0`. This marks the
@@ -183,9 +183,7 @@ globalActiveRulesSet.invalidate()  // Mark cache as stale
 
 **API Endpoints that Trigger Invalidation**:
 - `POST /compile-and-save-instruction` - Create new rule
-- `PUT /instructions/{id}` - Update rule
 - `DELETE /instructions/{id}` - Delete rule
-- Internal functions: `CreateInstructionWithPrecompiledDSL()`, `UpdateInstructionWithPrecompiledDSL()`
 
 ### Aggregate Conditions
 
@@ -199,16 +197,7 @@ Aggregate conditions are constant per rule set.
 ```go
 // In populate()
 rc.aggrConds = buildAggregateConds(rc.rules)
-
-// In transaction processing
-aggCtx, err := BuildAggContext(context.Background(), db, transactionMap, globalActiveRulesSet.aggrConds)
 ```
-
-These are expressions like:
-- `count(when source == $current.source, "PT24H")` - Count transactions in 24-hour window
-- `sum(amount when source == $current.source, "PT24H")` - Sum amounts in 24-hour window
-
-They represent aggregate operations that need additional database context to evaluate.
 
 ## Testing Strategy
 
@@ -238,17 +227,9 @@ This verifies that when rule modifications occur while processing a transaction 
 
 **Purpose**: Verify that updating a rule properly invalidates and rebuilds the cache.
 
-**Test Cases**:
-1. **Direct database update**: `updateInstructionDSL()`
-2. **API function**: `UpdateInstructionWithPrecompiledDSL()`
-
 #### 4. Rule Deletion Invalidation (`TestActiveRulesSet_DeleteRuleInvalidates`)
 
-**Purpose**: Verify that deleting a rule properly invalidates and removes it from the cache.
-
-**Test Cases**:
-1. **Direct database deletion**
-2. **HTTP DELETE endpoint**: `DELETE /instructions/{id}`
+**Purpose**: Verify that deleting a rule either programmatically or via API calls properly invalidates and removes it from the cache.
 
 #### 5. Instruction Record Creation Does Not Invalidate (`TestActiveRulesSet_CreateInstructionRecordDoesNotInvalidate`)
 
@@ -257,13 +238,6 @@ This verifies that when rule modifications occur while processing a transaction 
 #### 6. Concurrent Modification (`TestActiveRulesSet_ConcurrentModification`)
 
 **Purpose**: Verify that concurrent modifications to the active rules set correctly update the invalidation counter and that the cache can be successfully repopulated with all concurrent changes.
-
-**Scenario**:
-1. Compile two different rule scripts
-2. Launch multiple goroutines that concurrently create instructions via `CreateInstructionWithPrecompiledDSL()`
-3. Each goroutine creates one rule concurrently
-4. Verify invalidation counter is incremented correctly for all concurrent operations
-5. Verify cache can be repopulated to include all concurrently-created rules
 
 #### 7. Return error on Database Failure (`TestActiveRulesSet_PopulateReturnsErrorOnDatabaseFailure`)
 
