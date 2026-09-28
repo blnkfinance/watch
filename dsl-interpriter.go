@@ -79,6 +79,19 @@ type Rule struct {
 	Then Action            `json:"then"`
 }
 
+// String makes [Rule] to satisfy the [fmt.Stringer] interface.
+// This allows readable printing of [Rule] (such as in tests), which
+// would otherwise not be possible due to [Rule.When] being a 
+// [json.RawMessage] field.
+func (r Rule) String() string {
+	b, err := json.Marshal(r)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to marshal rule to json")
+		return ""
+	}
+	return string(b)
+}
+
 type RiskVerdict struct {
 	RuleID  int     `json:"rule_id"`
 	Name    string  `json:"name"`
@@ -109,10 +122,8 @@ func EvaluateRules(txn map[string]any, rules []Rule, aggContext map[string]float
 	return out, nil
 }
 
-func BuildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, rules []Rule) (map[string]float64, error) {
-	aggContext := make(map[string]float64)
-	specs := make(map[string]AggregateCond)
-
+func buildAggregateConds(rules []Rule) []AggregateCond {
+	var aggrConds []AggregateCond
 	for _, r := range rules {
 		for _, raw := range r.When {
 			var probe struct {
@@ -124,15 +135,25 @@ func BuildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, rules 
 			}
 			var ac AggregateCond
 			if err := json.Unmarshal(raw, &ac); err != nil {
-				return nil, err
-			}
-			resolved, ok := resolvePlaceholder(ac.Filter.Value, txn)
-			if !ok {
 				continue
 			}
-			key := aggKey(ac, fmt.Sprint(resolved))
-			specs[key] = ac
+			aggrConds = append(aggrConds, ac)
 		}
+	}
+	return aggrConds
+}
+
+func BuildAggContext(ctx context.Context, db *sql.DB, txn map[string]any, aggrConds []AggregateCond) (map[string]float64, error) {
+	aggContext := make(map[string]float64)
+	specs := make(map[string]AggregateCond)
+
+	for _, ac := range aggrConds {
+		resolved, ok := resolvePlaceholder(ac.Filter.Value, txn)
+		if !ok {
+			continue
+		}
+		key := aggKey(ac, fmt.Sprint(resolved))
+		specs[key] = ac
 	}
 
 	for k, spec := range specs {
