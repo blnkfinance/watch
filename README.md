@@ -341,6 +341,7 @@ For more detailed technical documentation, see:
 
 | Document | Description |
 |----------|-------------|
+| [Getting started](https://docs.blnkfinance.com/watch/quick-start) | Install Watch, write a rule, and read a risk verdict |
 | [API Documentation](API_DOCUMENTATION.md) | Complete API reference for all endpoints |
 | [Watermark Sync](WATERMARK_SYNC_DOCUMENTATION.md) | Transaction synchronization from PostgreSQL to DuckDB |
 | [Git Manager](GIT_MANAGER_README.md) | Managing watch scripts via Git repositories |
