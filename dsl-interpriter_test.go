@@ -544,7 +544,8 @@ func TestRunAggregateQueryAndBuildAggContext(t *testing.T) {
 	})
 	rules := []Rule{{ID: 1, Name: "agg-rule", When: []json.RawMessage{raw}, Then: Action{Verdict: "review", Score: 0.5}}}
 
-	aggCtx, err := BuildAggContext(ctx, db, txn, rules)
+	aggrConds := buildAggregateConds(rules)
+	aggCtx, err := BuildAggContext(ctx, db, txn, aggrConds)
 	if err != nil {
 		t.Fatalf("BuildAggContext error: %v", err)
 	}
@@ -631,4 +632,47 @@ func TestEvalPreviousTransaction(t *testing.T) {
 			t.Error("missing created_at should error")
 		}
 	})
+}
+func TestBuildAggregateConds(t *testing.T) {
+	// given a rule with no aggregate conds, it should not
+	// return any aggregate conds
+	ruleWithNoAggrCond := []Rule{{
+		When: []json.RawMessage{
+			json.RawMessage(`{"field":"amount","op":"gt","value":1000}`),
+		},
+	}}
+
+	if got := buildAggregateConds(ruleWithNoAggrCond); len(got) != 0 {
+		t.Fatalf("buildAggregateConds() returned %d conditions, want 0", len(got))
+	}
+
+	// given a rule with one aggregate cond, it should return only one
+	// aggregate cond. The returned aggregate cond should contain
+	// the exepected fields corresponding to the rule that was passed in.
+	aggregateRules := []Rule{{
+		When: []json.RawMessage{
+			json.RawMessage(`{"type":"aggregate","metric":"sum","time_window":"PT24H","op":"gte","value":5000,"filter":{"field":"destination","op":"eq","value":"$current.destination"}}`),
+		},
+	}}
+
+	got := buildAggregateConds(aggregateRules)
+	if len(got) != 1 {
+		t.Fatalf("buildAggregateConds() returned %d conditions, want 1", len(got))
+	}
+
+	want := AggregateCond{
+		Type:       "aggregate",
+		Metric:     "sum",
+		TimeWindow: "PT24H",
+		Op:         "gte",
+		Value:      5000,
+		Filter: SimpleCond{
+			Field: "destination",
+			Op:    "eq",
+			Value: "$current.destination",
+		},
+	}
+	if got[0] != want {
+		t.Errorf("buildAggregateConds() = %+v, want %+v", got[0], want)
+	}
 }
